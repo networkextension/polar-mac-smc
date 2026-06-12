@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.local.smcfan</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/local/bin/smcfan</string>
+		<string>set</string>
+		<string>2900</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<!-- Re-apply every 60s: the SMC reverts to (broken) auto mode after
+	     sleep/wake or an SMC reset, so keep re-asserting the target. -->
+	<key>StartInterval</key>
+	<integer>60</integer>
+	<key>StandardOutPath</key>
+	<string>/var/log/smcfan.log</string>
+	<key>StandardErrorPath</key>
+	<string>/var/log/smcfan.log</string>
+</dict>
+</plist>
