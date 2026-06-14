@@ -16,10 +16,11 @@
 #include <string.h>
 #include <IOKit/IOKitLib.h>
 
-#define KERNEL_INDEX_SMC   2
-#define SMC_CMD_READ_KEY   5
-#define SMC_CMD_WRITE_KEY  6
-#define SMC_CMD_KEY_INFO   9
+#define KERNEL_INDEX_SMC     2
+#define SMC_CMD_READ_KEY     5
+#define SMC_CMD_WRITE_KEY    6
+#define SMC_CMD_READ_INDEX   8
+#define SMC_CMD_KEY_INFO     9
 
 typedef struct { char major; char minor; char build; char reserved; UInt16 release; } SMCVers_t;
 typedef struct { UInt16 version; UInt16 length; UInt32 cpuPLimit; UInt32 gpuPLimit; UInt32 memPLimit; } SMCPLimit_t;
@@ -178,6 +179,73 @@ static double read_fan_key(int fan, const char *suffix)
     return decode_rpm(&info, b);
 }
 
+static UInt32 smc_key_count(void)
+{
+    SMCKeyInfo_t info; unsigned char b[32];
+    if (smc_read("#KEY", &info, b) != 0)
+        return 0;
+    return ((UInt32)b[0] << 24) | ((UInt32)b[1] << 16) |
+           ((UInt32)b[2] << 8) | (UInt32)b[3];
+}
+
+/* List all SMC keys whose name starts with `prefix` (NULL = all). */
+static int cmd_keys(const char *prefix)
+{
+    UInt32 total = smc_key_count();
+    if (total == 0) { fprintf(stderr, "smcfan: cannot read #KEY\n"); return 1; }
+    size_t plen = prefix ? strlen(prefix) : 0;
+    for (UInt32 i = 0; i < total; i++) {
+        SMCKeyData_t in = {0}, out = {0};
+        in.data8 = SMC_CMD_READ_INDEX;
+        in.data32 = i;
+        if (smc_call(&in, &out) != kIOReturnSuccess || out.result != 0)
+            continue;
+        char name[5]; type2str(out.key, name);
+        if (plen && strncmp(name, prefix, plen) != 0)
+            continue;
+        SMCKeyInfo_t info; unsigned char b[32];
+        if (smc_read(name, &info, b) != 0) { printf("%s: <read failed>\n", name); continue; }
+        char fmt[5]; type2str(info.dataType, fmt);
+        printf("%s [%s,%u] ", name, fmt, info.dataSize);
+        for (UInt32 j = 0; j < info.dataSize && j < 32; j++) printf("%02x", b[j]);
+        printf("  |");
+        for (UInt32 j = 0; j < info.dataSize && j < 32; j++)
+            printf("%c", (b[j] >= 32 && b[j] < 127) ? b[j] : '.');
+        printf("|\n");
+    }
+    return 0;
+}
+
+/* Decode the F<n>ID descriptor ({fds, 16 bytes):
+ *   [0]=type [1]=zone [2]=location [3]=reserved [4..15]=name string */
+static int cmd_id(void)
+{
+    int n = fan_count();
+    if (n < 0) { fprintf(stderr, "smcfan: cannot read FNum\n"); return 1; }
+    printf("fans: %d\n", n);
+    for (int i = 0; i < n; i++) {
+        char key[5]; SMCKeyInfo_t info; unsigned char b[32] = {0};
+        snprintf(key, sizeof(key), "F%dID", i);
+        if (smc_read(key, &info, b) != 0) {
+            printf("fan%d: (no %s key)\n", i, key);
+            continue;
+        }
+        char fmt[5]; type2str(info.dataType, fmt);
+        char name[16] = {0};
+        UInt32 nlen = info.dataSize > 4 ? info.dataSize - 4 : 0;
+        if (nlen > 12) nlen = 12;
+        memcpy(name, b + 4, nlen);
+        for (int j = (int)strlen(name) - 1; j >= 0 && name[j] == ' '; j--)
+            name[j] = 0;
+        printf("fan%d: name=\"%s\" zone=%u location=%u type=%u fmt=%s raw=",
+               i, name, b[1], b[2], b[0], fmt);
+        for (UInt32 j = 0; j < info.dataSize; j++)
+            printf("%02x", b[j]);
+        printf("\n");
+    }
+    return 0;
+}
+
 static int cmd_status(void)
 {
     int n = fan_count();
@@ -240,7 +308,7 @@ static int cmd_auto(void)
 int main(int argc, char **argv)
 {
     if (argc < 2) {
-        fprintf(stderr, "usage: %s status | set <rpm> | auto\n", argv[0]);
+        fprintf(stderr, "usage: %s status | id | set <rpm> | auto\n", argv[0]);
         return 2;
     }
 
@@ -257,12 +325,16 @@ int main(int argc, char **argv)
     int rc;
     if (strcmp(argv[1], "status") == 0)
         rc = cmd_status();
+    else if (strcmp(argv[1], "id") == 0)
+        rc = cmd_id();
+    else if (strcmp(argv[1], "keys") == 0)
+        rc = cmd_keys(argc >= 3 ? argv[2] : NULL);
     else if (strcmp(argv[1], "set") == 0 && argc >= 3)
         rc = cmd_set(atof(argv[2]));
     else if (strcmp(argv[1], "auto") == 0)
         rc = cmd_auto();
     else {
-        fprintf(stderr, "usage: %s status | set <rpm> | auto\n", argv[0]);
+        fprintf(stderr, "usage: %s status | id | set <rpm> | auto\n", argv[0]);
         rc = 2;
     }
 
